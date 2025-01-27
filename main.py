@@ -1,15 +1,14 @@
 """
 title: Youtube Transcript Provider (Langchain Community)
-author: thearyadev 
+author: thearyadev && cloph
 author_url: https://github.com/thearyadev/youtube-transcript-provider
 funding_url: https://github.com/open-webui
-version: 0.0.2
+version: 0.0.3
 """
 
 from typing import Awaitable, Callable, Any
 from langchain_community.document_loaders import YoutubeLoader
 import traceback
-
 
 class Tools:
     def __init__(self):
@@ -21,14 +20,18 @@ class Tools:
         __event_emitter__: Callable[[dict[str, dict[str, Any] | str]], Awaitable[None]],
     ) -> str:
         """
-        Provides the title and full transcript of a YouTube video in English.
-        Only use if the user supplied a valid YouTube URL.
-        Examples of valid YouTube URLs: https://youtu.be/dQw4w9WgXcQ, https://www.youtube.com/watch?v=dQw4w9WgXcQ
+        Tenta recolher a transcrição na seguinte ordem de prioridade:
+         1. Inglês oficial (en)
+         2. Inglês automático (en_auto)
+         3. Português (pt)
+         4. Português automático (pt_auto)
+         5. Português do Brasil (pt-BR)
+         6. Português do Brasil automático (pt-BR_auto)
 
-        :param url: The URL of the youtube video that you want the transcript for.
-        :return: The title and full transcript of the YouTube video in English, or an error message.
+        Retorna a primeira transcrição encontrada ou mensagem de erro.
         """
         try:
+            # Exemplo de URL inválida
             if "dQw4w9WgXcQ" in url:
                 await __event_emitter__(
                     {
@@ -41,14 +44,33 @@ class Tools:
                 )
                 return "The tool failed with an error. No transcript has been provided."
 
-            data = YoutubeLoader.from_youtube_url(
-                # video info seems to be broken
-                youtube_url=url,
-                add_video_info=False,
-                language=["en", "en_auto"],
-            ).load()
+            # Ordem de prioridade
+            languages_in_order = [
+                "en",
+                "en_auto",
+                "pt",
+                "pt_auto",
+                "pt-BR",
+                "pt-BR_auto"
+            ]
+
+            data = None
+
+            for lang in languages_in_order:
+                try:
+                    candidate_data = YoutubeLoader.from_youtube_url(
+                        youtube_url=url,
+                        add_video_info=False,
+                        language=[lang]
+                    ).load()
+                    if candidate_data:
+                        data = candidate_data
+                        break  # Encontrou e interrompe
+                except Exception:
+                    pass
 
             if not data:
+                # Não encontrou legendas em nenhum idioma listado
                 await __event_emitter__(
                     {
                         "type": "status",
@@ -60,16 +82,31 @@ class Tools:
                 )
                 return "The tool failed with an error. No transcript has been provided."
 
+            # Constrói a resposta a partir do primeiro Document
+            doc = data[0]
+            title = doc.metadata.get("title", "No Title")
+            lang = doc.metadata.get("language", "unknown")
+            auto_flag = doc.metadata.get("is_auto_generated", False)
+            transcript_content = doc.page_content
+            auto_text = " (auto)" if auto_flag else ""
+
+            # Emite evento de sucesso
             await __event_emitter__(
                 {
                     "type": "status",
                     "data": {
-                        "description": f"Successfully retrieved transcript for {url}",
+                        "description": f"Successfully retrieved transcript for {url} in language {lang}{auto_text}",
                         "done": True,
                     },
                 }
             )
-            return f"Title: {data[0].metadata.get('title')}\nTranscript:\n{data[0].page_content}"
+
+            return (
+                f"Title: {title}\n"
+                f"Language: {lang}{auto_text}\n\n"
+                f"Transcript:\n{transcript_content}"
+            )
+
         except:
             await __event_emitter__(
                 {
@@ -80,5 +117,8 @@ class Tools:
                     },
                 }
             )
-            return f"The tool failed with an error. No transcript has been provided.\nError Traceback: \n{traceback.format_exc()}"
+            return (
+                "The tool failed with an error. No transcript has been provided.\n"
+                f"Error Traceback:\n{traceback.format_exc()}"
+            )
 
